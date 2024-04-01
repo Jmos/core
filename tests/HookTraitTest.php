@@ -63,7 +63,8 @@ class HookTraitTest extends TestCase
     public function testOrder(): void
     {
         $m = new HookMock();
-        $ind = $m->onHook('spot', static function () {
+
+        $m->onHook('spot', static function () {
             return 3;
         }, [], -1);
         $m->onHook('spot', static function () {
@@ -100,16 +101,16 @@ class HookTraitTest extends TestCase
         $ret = $m->hook('spot');
 
         self::assertSame([
-            $ind + 2 => 1,
-            $ind + 1 => 2,
-            $ind => 3,
-            $ind + 3 => 4,
-            $ind + 4 => 5,
-            $ind + 6 => 6,
-            $ind + 7 => 7,
-            $ind + 8 => 8,
-            $ind + 9 => 9,
-            $ind + 5 => 10,
+            2 => 1,
+            1 => 2,
+            0 => 3,
+            3 => 4,
+            4 => 5,
+            6 => 6,
+            7 => 7,
+            8 => 8,
+            9 => 9,
+            5 => 10,
         ], $ret);
     }
 
@@ -132,6 +133,72 @@ class HookTraitTest extends TestCase
 
         $res2 = $obj->hook('test', [3, 3]);
         self::assertSame([9, 6], $res2);
+    }
+
+    public function testUpdateWhenActive(): void
+    {
+        $m = new HookMock();
+
+        $addHooksFx = static function (int $priority, string $res) use ($m) {
+            $m->onHook('spot', static function () use ($m, $priority, $res) {
+                $m->onHook('spot', static function () use ($res) {
+                    return $res . 'a';
+                }, [], $priority);
+                $m->onHook('spot', static function () use ($m, $priority, $res) {
+                    $m->removeHook('spot', $priority);
+
+                    return $res . 'b';
+                }, [], $priority);
+
+                return $res;
+            }, [], $priority);
+        };
+
+        $addHooksFx(-2, '1');
+        $addHooksFx(-1, '2');
+        $addHooksFx(-1, '3');
+        $addHooksFx(0, '4');
+        $addHooksFx(1, '5');
+        $addHooksFx(1, '6');
+
+        $priority = 10;
+        $indexPrevious = $m->onHook('spot', static fn () => 'x', [], $priority);
+        $indexCurrent = $m->onHook('spot', static function () use ($m, $priority, $indexPrevious, &$indexCurrent, &$indexNext) {
+            $m->onHook('spot', static fn () => 'ya', [], $priority);
+
+            $m->removeHook('spot', $indexPrevious, true);
+            $m->removeHook('spot', $indexCurrent, true);
+            $m->removeHook('spot', $indexNext, true); // @phpstan-ignore-line
+
+            $m->onHook('spot', static function () use ($m, $priority) {
+                $m->removeHook('spot', $priority);
+
+                return 'yb';
+            }, [], $priority);
+
+            return 'y';
+        }, [], $priority);
+        $indexNext = $m->onHook('spot', static fn () => 'z', [], $priority);
+
+        $ret = $m->hook('spot');
+
+        self::assertSame([
+            0 => '1',
+            10 => '1b',
+            2 => '3',
+            12 => '3b',
+            3 => '4',
+            13 => '4a',
+            14 => '4b',
+            4 => '5',
+            5 => '6',
+            15 => '5a',
+            16 => '5b',
+            6 => 'x',
+            7 => 'y',
+            19 => 'ya',
+            20 => 'yb',
+        ], $ret);
     }
 
     public function testArgs(): void
@@ -256,9 +323,8 @@ class HookTraitTest extends TestCase
         $m->hook('inc', ['y']);
     }
 
-    public function testCloningSafety(): void
+    public function testCloningSafetyUnboundClosure(): void
     {
-        // unbound callback
         $m = new HookMock();
         $m->onHook('inc', static function () {});
         $m->onHookShort('inc', static function () {});
@@ -267,8 +333,10 @@ class HookTraitTest extends TestCase
         foreach ($m->hook('inc') as $v) {
             self::assertNull($v);
         }
+    }
 
-        // callback bound to the same object
+    public function testCloningSafetyBoundClosureSameObject(): void
+    {
         $m = new HookMock();
         $m->onHook('inc', $m->makeIncrementResultFx());
         $m->onHookShort('inc', $m->makeIncrementResultFx());
@@ -286,8 +354,10 @@ class HookTraitTest extends TestCase
             self::assertSame($m, $v);
         }
         self::assertSame(6, $m->result);
+    }
 
-        // callback bound to a different object
+    public function testCloningSafetyBoundClosureDifferentObjectException(): void
+    {
         $m = new HookMock();
         $m->onHook('inc', (clone $m)->makeIncrementResultFx());
         $m = clone $m;
@@ -438,7 +508,7 @@ class HookTraitTest extends TestCase
     public function testHasCallbacks(): void
     {
         $m = new HookMock();
-        $ind = $m->onHook('foo', static function () {});
+        $index = $m->onHook('foo', static function () {});
 
         self::assertTrue($m->hookHasCallbacks('foo'));
         self::assertFalse($m->hookHasCallbacks('bar'));
@@ -447,32 +517,32 @@ class HookTraitTest extends TestCase
         self::assertFalse($m->hookHasCallbacks('foo', 10));
         self::assertFalse($m->hookHasCallbacks('bar', 5));
 
-        self::assertTrue($m->hookHasCallbacks('foo', $ind, true));
-        self::assertFalse($m->hookHasCallbacks('foo', $ind + 1, true));
-        self::assertFalse($m->hookHasCallbacks('foo', $ind - 1, true));
-        self::assertFalse($m->hookHasCallbacks('bar', $ind, true));
+        self::assertTrue($m->hookHasCallbacks('foo', $index, true));
+        self::assertFalse($m->hookHasCallbacks('foo', $index + 1, true));
+        self::assertFalse($m->hookHasCallbacks('foo', $index - 1, true));
+        self::assertFalse($m->hookHasCallbacks('bar', $index, true));
     }
 
     public function testRemove(): void
     {
         $m = new HookMock();
-        $indA = $m->onHook('foo', static function () {}, [], 2);
-        $indB = $m->onHook('foo', static function () {});
-        $indC = $m->onHook('foo', static function () {});
+        $indexA = $m->onHook('foo', static function () {}, [], 2);
+        $indexB = $m->onHook('foo', static function () {});
+        $indexC = $m->onHook('foo', static function () {});
 
-        self::assertTrue($m->hookHasCallbacks('foo', $indA, true));
-        self::assertTrue($m->hookHasCallbacks('foo', $indB, true));
-        self::assertTrue($m->hookHasCallbacks('foo', $indC, true));
+        self::assertTrue($m->hookHasCallbacks('foo', $indexA, true));
+        self::assertTrue($m->hookHasCallbacks('foo', $indexB, true));
+        self::assertTrue($m->hookHasCallbacks('foo', $indexC, true));
 
-        $m->removeHook('foo', $indC, true);
-        self::assertTrue($m->hookHasCallbacks('foo', $indA, true));
-        self::assertTrue($m->hookHasCallbacks('foo', $indB, true));
-        self::assertFalse($m->hookHasCallbacks('foo', $indC, true));
+        $m->removeHook('foo', $indexC, true);
+        self::assertTrue($m->hookHasCallbacks('foo', $indexA, true));
+        self::assertTrue($m->hookHasCallbacks('foo', $indexB, true));
+        self::assertFalse($m->hookHasCallbacks('foo', $indexC, true));
 
         $m->removeHook('foo', 2);
-        self::assertFalse($m->hookHasCallbacks('foo', $indA, true));
-        self::assertTrue($m->hookHasCallbacks('foo', $indB, true));
-        self::assertFalse($m->hookHasCallbacks('foo', $indC, true));
+        self::assertFalse($m->hookHasCallbacks('foo', $indexA, true));
+        self::assertTrue($m->hookHasCallbacks('foo', $indexB, true));
+        self::assertFalse($m->hookHasCallbacks('foo', $indexC, true));
 
         self::assertTrue($m->hookHasCallbacks('foo'));
         $m->removeHook('foo');
