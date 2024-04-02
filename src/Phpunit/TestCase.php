@@ -8,12 +8,13 @@ use Atk4\Core\Exception as CoreException;
 use Atk4\Core\WarnDynamicPropertyTrait;
 use PHPUnit\Framework\TestCase as BaseTestCase;
 use PHPUnit\Metadata\Api\CodeCoverage as CodeCoverageMetadata;
+use PHPUnit\Metadata\Parser\Registry as MetadataRegistry;
 use PHPUnit\Runner\BaseTestRunner;
 use PHPUnit\Runner\CodeCoverage;
 use PHPUnit\Util\Test as TestUtil;
 use SebastianBergmann\CodeCoverage\CodeCoverage as CodeCoverageRaw;
 
-if (\PHP_VERSION_ID >= 8_01_00) {
+if (\PHP_VERSION_ID >= 80100) {
     trait Phpunit9xTestCaseTrait
     {
         #[\Override]
@@ -55,25 +56,29 @@ abstract class TestCase extends BaseTestCase
             /** @var array<string, true> */
             public static $processedMethods = [];
         });
-        $classRefl = new \ReflectionClass(static::class);
-        foreach ($classRefl->getMethods() as $methodRefl) {
-            $methodDoc = $methodRefl->getDocComment();
-            // https://github.com/sebastianbergmann/phpunit/blob/9.6.16/src/Util/Test.php#L334
-            // https://github.com/sebastianbergmann/phpunit/blob/9.6.16/src/Framework/TestCase.php#L2543
-            if ($methodDoc !== false && preg_match_all('~@dataProvider[ \t]+([\w\x7f-\xff]+::)?([\w\x7f-\xff]+)~', $methodDoc, $matchesAll, \PREG_SET_ORDER)) {
-                foreach ($matchesAll as $matches) {
-                    $providerClassRefl = $matches[1] === '' ? $classRefl : new \ReflectionClass($matches[1]);
-                    $providerMethodRefl = $providerClassRefl->getMethod($matches[2]);
-                    $key = $providerClassRefl->getName() . '::' . $providerMethodRefl->getName();
-                    if (!isset($staticClass::$processedMethods[$key])) {
-                        $staticClass::$processedMethods[$key] = true;
-                        $providerInstance = $providerClassRefl->newInstanceWithoutConstructor();
-                        $provider = $providerMethodRefl->invoke($providerInstance);
-                        if (!is_array($provider)) {
-                            // yield all provider data
-                            iterator_to_array($provider);
-                        }
-                    }
+
+        $metadataDataProviders = [];
+        if (self::isPhpunit9x()) {
+            $annotations = TestUtil::parseTestMethodAnnotations(static::class, $this->getName(false));
+            foreach ($annotations['method']['dataProvider'] ?? [] as $dataProviderAnnotation) {
+                preg_match('~^([\w\x7f-\xff]+::)?([\w\x7f-\xff]+)~', $dataProviderAnnotation, $matches);
+                $metadataDataProviders[] = [$matches[1] === '' ? static::class : $matches[1], $matches[2]];
+            }
+        } else {
+            $metadataDataProviders = MetadataRegistry::parser()->forClassAndMethod(static::class, $this->name())->isDataProvider();
+        }
+
+        foreach ($metadataDataProviders as $metadataDataProvider) {
+            $providerClassRefl = new \ReflectionClass(self::isPhpunit9x() ? $metadataDataProvider[0] : $metadataDataProvider->className());
+            $providerMethodRefl = $providerClassRefl->getMethod(self::isPhpunit9x() ? $metadataDataProvider[1] : $metadataDataProvider->methodName());
+            $key = $providerClassRefl->getName() . '::' . $providerMethodRefl->getName();
+            if (!isset($staticClass::$processedMethods[$key])) {
+                $staticClass::$processedMethods[$key] = true;
+                $providerInstance = $providerClassRefl->newInstanceWithoutConstructor();
+                $provider = $providerMethodRefl->invoke($providerInstance);
+                if (!is_array($provider)) {
+                    // yield all provider data
+                    iterator_to_array($provider);
                 }
             }
         }
@@ -99,11 +104,11 @@ abstract class TestCase extends BaseTestCase
             \Closure::bind(function () use ($class) {
                 foreach (array_keys(array_intersect_key(array_diff_key(get_object_vars($this), get_class_vars(BaseTestCase::class)), get_class_vars($class))) as $k) {
                     $reflectionProperty = new \ReflectionProperty($class, $k);
-                    if (\PHP_MAJOR_VERSION < 8
+                    if (\PHP_MAJOR_VERSION === 7
                         ? array_key_exists($k, $reflectionProperty->getDeclaringClass()->getDefaultProperties())
                         : (null ?? $reflectionProperty->hasDefaultValue()) // @phpstan-ignore-line for PHP 7.x
                     ) {
-                        $this->{$k} = \PHP_MAJOR_VERSION < 8
+                        $this->{$k} = \PHP_MAJOR_VERSION === 7
                             ? $reflectionProperty->getDeclaringClass()->getDefaultProperties()[$k]
                             : (null ?? $reflectionProperty->getDefaultValue()); // @phpstan-ignore-line for PHP 7.x
                     } else {
